@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<OutputType>WinExe</OutputType>
+		<TargetFramework>net8.0-windows</TargetFramework>
+		<UseWindowsForms>true</UseWindowsForms>
+		<LangVersion>latest</LangVersion>
+		<Nullable>disable</Nullable>
+		<ImplicitUsings>disable</ImplicitUsings>
+		<PlatformTarget>x64</PlatformTarget>
+		<AssemblyName>RatEyeGroundTruth</AssemblyName>
+		<RootNamespace>RatEyeGroundTruth</RootNamespace>
+		<Description>Tool to record ground truth for icon scans of Escape from Tarkov</Description>
+		<IsPackable>false</IsPackable>
+
+		<!-- Screen coordinates have to be physical pixels so they match the captured screenshot -->
+		<ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+		<ApplicationVisualStyles>true</ApplicationVisualStyles>
+		<ForceDesignerDpiUnaware>true</ForceDesignerDpiUnaware>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\RatEye\RatEye.csproj" />
+	</ItemGroup>
+
+</Project>
