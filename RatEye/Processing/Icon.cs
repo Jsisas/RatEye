@@ -246,12 +246,23 @@ namespace RatEye.Processing
 		/// </summary>
 		private void Disambiguate()
 		{
-			if (!IconConfig.UseShortNameDisambiguation || _candidates.Count < 2) return;
+			if (!IconConfig.UseShortNameDisambiguation || _candidates.Count == 0) return;
 
 			var ordered = _candidates.OrderByDescending(c => c.confidence).ToList();
 			var best = ordered[0].confidence;
-			var second = ordered[1].confidence;
-			if (best - second >= IconConfig.AmbiguityMargin && best >= IconConfig.AmbiguityMinConfidence) return;
+
+			// Candidates within the template margin, expanded by byte-identical icons
+			var contenders = new List<(string match, float confidence, Vector2 pos, bool rotated)>();
+			var seen = new HashSet<string>();
+			foreach (var candidate in ordered)
+			{
+				if (candidate.confidence < best - IconConfig.AmbiguityMargin) break;
+				foreach (var key in _config.IconManager.GetIdenticalIcons(candidate.match))
+				{
+					if (seen.Add(key)) contenders.Add((key, candidate.confidence, candidate.pos, candidate.rotated));
+				}
+			}
+			if (contenders.Count < 2) return;
 
 			string ocr;
 			try
@@ -265,22 +276,28 @@ namespace RatEye.Processing
 			}
 			if (string.IsNullOrEmpty(ocr)) return;
 
+			var normOcr = NormalizeShortName(ocr);
 			var bestScore = float.MinValue;
 			(string match, float confidence, Vector2 pos, bool rotated)? chosen = null;
-			foreach (var candidate in ordered)
+			foreach (var contender in contenders)
 			{
-				var item = _config.IconManager.GetItem(candidate.match);
+				var item = _config.IconManager.GetItem(contender.match);
 				if (item == null) continue;
-				var score = candidate.confidence + 0.5f * item.ShortName.Replace("I", "T").CyrillicToLatin().NormedLevenshteinDistance(ocr);
+				var score = NormalizeShortName(item.ShortName).NormedLevenshteinDistance(normOcr);
 				if (!(score > bestScore)) continue;
 				bestScore = score;
-				chosen = candidate;
+				chosen = contender;
 			}
 			if (chosen == null) return;
 
 			var c = chosen.Value;
 			SetTemplateResult(c.match, c.confidence, c.pos, c.rotated);
 			Logger.LogDebug($"Disambiguated '{ocr}' -> {_item?.ShortName}");
+		}
+
+		private static string NormalizeShortName(string s)
+		{
+			return Regex.Replace(s.CyrillicToLatin().ToUpperInvariant().Replace("I", "T"), "[^A-Z0-9]", "");
 		}
 
 		private List<(string match, float confidence, Vector2 pos)> TemplateMatchSub(Mat source, Dictionary<string, Mat> icons)
@@ -317,7 +334,7 @@ namespace RatEye.Processing
 			// Use converter class to round to nearest int instead of always rounding down
 			var x = (Size.X - 1) / ScaledSlotSize;
 			var y = (Size.Y - 1) / ScaledSlotSize;
-			return new Vector2((int)x, (int)y);
+			return new Vector2((int)Math.Round(x), (int)Math.Round(y));
 		}
 		/// <summary>
 		/// Perform optical character recognition on a image
@@ -394,13 +411,14 @@ namespace RatEye.Processing
 				var v = new Vector2(i.GetSlotSize());
 				return v == slotSize || v == slotSize.Flipped;
 			});
+			var normTitle = NormalizeShortName(_ocrTitle);
 			_item = items.Aggregate((i1, i2) =>
 			{
-				var i1Dist = i1.ShortName.Replace("I", "T").CyrillicToLatin().NormedLevenshteinDistance(_ocrTitle);
-				var i2Dist = i2.ShortName.Replace("I", "T").CyrillicToLatin().NormedLevenshteinDistance(_ocrTitle);
+				var i1Dist = NormalizeShortName(i1.ShortName).NormedLevenshteinDistance(normTitle);
+				var i2Dist = NormalizeShortName(i2.ShortName).NormedLevenshteinDistance(normTitle);
 				return i1Dist > i2Dist ? i1 : i2;
 			});
-			_detectionConfidence = _item.ShortName.CyrillicToLatin().NormedLevenshteinDistance(_ocrTitle);
+			_detectionConfidence = NormalizeShortName(_item.ShortName).NormedLevenshteinDistance(normTitle);
 			_rotated = new Vector2(_item.GetSlotSize()) != slotSize;
 		}
 

@@ -74,7 +74,7 @@ namespace RatEyeGroundTruth
 				}
 
 				var slotPixels = engine.Config.ProcessingConfig.BaseSlotSize * scale;
-				var grid = new Size((int)((icon.Size.X - 1) / slotPixels), (int)((icon.Size.Y - 1) / slotPixels));
+				var grid = new Size((int)Math.Round((icon.Size.X - 1) / slotPixels), (int)Math.Round((icon.Size.Y - 1) / slotPixels));
 				var location = new Point(icon.Position.X + icon.ItemPosition.X, icon.Position.Y + icon.ItemPosition.Y);
 				var size = new Size((int)(grid.Width * slotPixels) + 1, (int)(grid.Height * slotPixels) + 1);
 

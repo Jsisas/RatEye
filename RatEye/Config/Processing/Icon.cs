@@ -49,17 +49,12 @@ namespace RatEye
 				/// <summary>
 				/// Number of best template matches kept as candidates for disambiguation
 				/// </summary>
-				public int CandidateCount = 5;
+				public int CandidateCount = 10;
 
 				/// <summary>
 				/// A match is ambiguous when the best two candidates are closer than this confidence margin
 				/// </summary>
 				public float AmbiguityMargin = 0.02f;
-
-				/// <summary>
-				/// A match is ambiguous when the best candidate has a confidence below this value
-				/// </summary>
-				public float AmbiguityMinConfidence = 0.9f;
 
 				/// <summary>
 				/// Tesseract Engine instance used and set by <see cref="RatEye.Processing.Icon"/>
@@ -81,7 +76,6 @@ namespace RatEye
 						UseShortNameDisambiguation.ToString(),
 						CandidateCount.ToString(),
 						AmbiguityMargin.ToString(),
-						AmbiguityMinConfidence.ToString(),
 					};
 					return string.Join("<#sep#>", components).SHA256Hash();
 				}

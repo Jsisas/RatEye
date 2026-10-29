@@ -1,4 +1,5 @@
-﻿using System;
+﻿using System.Security.Cryptography;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -65,6 +66,19 @@ namespace RatEye
 		/// <para/> ConcurrentDictionary&lt;iconKey, iconPath&gt;
 		/// </summary>
 		private readonly Dictionary<string, string> _iconPaths = new();
+
+		/// <summary>
+		/// Hex SHA256 of each icon's source image bytes
+		/// <para/> Dictionary&lt;iconKey, contentHash&gt;
+		/// </summary>
+		/// <remarks>Use <c>lock (_identicalIcons)</c> when accessing.</remarks>
+		private readonly Dictionary<string, string> _iconContentHash = new();
+
+		/// <summary>
+		/// Icon keys grouped by byte-identical source image
+		/// <para/> Dictionary&lt;contentHash, iconKeys&gt;
+		/// </summary>
+		private readonly Dictionary<string, List<string>> _identicalIcons = new();
 
 		private FileSystemWatcher _dynCorrelationDataWatcher;
 
@@ -164,8 +178,14 @@ namespace RatEye
 						if (iconType == IconType.Static && StaticIcons.Any(x => x.Value.ContainsKey(iconKey))) return;
 						if (iconType == IconType.Dynamic && DynamicIcons.Any(x => x.Value.ContainsKey(iconKey))) return;
 
+						string contentHash;
+						using (var sha = SHA256.Create())
+						{
+							contentHash = BitConverter.ToString(sha.ComputeHash(File.ReadAllBytes(iconPath))).Replace("-", "");
+						}
+
 						var useCache = _config.ProcessingConfig.UseCache;
-						var cacheIconPath = $"{_config.PathConfig.CacheDir}\\{iconKey.CacheKey(configHash)}.bmp";
+						var cacheIconPath = $"{_config.PathConfig.CacheDir}\\{iconKey.CacheKey(configHash + contentHash)}.bmp";
 						var cacheHit = useCache && File.Exists(cacheIconPath);
 
 						iconPath = cacheHit ? cacheIconPath : iconPath;
@@ -199,6 +219,16 @@ namespace RatEye
 							// Add icon to icon and path dictionary
 							loadedIcons[size][iconKey] = icon;
 							_iconPaths[iconKey] = iconPath;
+							lock (_identicalIcons)
+							{
+								_iconContentHash[iconKey] = contentHash;
+								if (!_identicalIcons.TryGetValue(contentHash, out var group))
+								{
+									group = new List<string>();
+									_identicalIcons.Add(contentHash, group);
+								}
+								if (!group.Contains(iconKey)) group.Add(iconKey);
+							}
 						}
 					});
 				}
@@ -389,6 +419,21 @@ namespace RatEye
 				IconType.Dynamic => _config.PathConfig.DynamicIcons,
 			};
 			return System.IO.Path.Combine(basePath, System.IO.Path.GetFileName(iconPath));
+		}
+
+		/// <summary>
+		/// Icon keys whose source image is byte-identical to the given one (includes the key itself)
+		/// </summary>
+		internal IReadOnlyList<string> GetIdenticalIcons(string iconKey)
+		{
+			lock (_identicalIcons)
+			{
+				if (_iconContentHash.TryGetValue(iconKey, out var hash) && _identicalIcons.TryGetValue(hash, out var group))
+				{
+					return group.ToArray();
+				}
+			}
+			return new[] { iconKey };
 		}
 
 		/// <summary>
