@@ -18,7 +18,26 @@ namespace RatEye.Processing
 		private List<Rect> _boundingBoxes = new();
 		private List<Icon> _icons = new();
 
+		/// <summary>
+		/// Grid line pitch in pixels at 1080p (scale 1), measured on RatEyeTest/TestData/FHD/Grid1.png
+		/// </summary>
+		private const float GridPitch1080 = 63f;
+
+		/// <summary>
+		/// Relative deviation from the configured scale below which the configured scale is kept.
+		/// Containers with gaps between sub grids measure a few percent too large (e.g. 65 px at 1080p).
+		/// </summary>
+		private const float ScaleTolerance = 0.05f;
+
+		/// <summary>
+		/// Scale used for this inventory. Starts as the configured scale and is replaced by
+		/// the scale measured from the grid lines when they disagree.
+		/// </summary>
+		private float _scale;
+
 		private Config.Processing ProcessingConfig => _config.ProcessingConfig;
+
+		private float ScaledSlotSize => _scale * ProcessingConfig.BaseSlotSize;
 
 		/// <summary>
 		/// All icons, contained inside the inventory
@@ -41,6 +60,7 @@ namespace RatEye.Processing
 		{
 			_config = config;
 			_image = image.ToMat();
+			_scale = config.ProcessingConfig.Scale;
 		}
 
 		private enum State
@@ -90,7 +110,7 @@ namespace RatEye.Processing
 			var colorFilter = hsv.InRange(minBackgroundScalar, maxBackgroundScalar);
 			Logger.LogDebugMat(colorFilter, "inventory/colorFilter");
 
-			var scale = _config.ProcessingConfig.Scale;
+			var scale = _scale;
 
 			using var hStructure = Mat.Ones(MatType.CV_8U, new[] { 1, (int)(2 * scale) }).ToMat();
 			using var vStructure = Mat.Ones(MatType.CV_8U, new[] { (int)(2 * scale), 1 }).ToMat();
@@ -114,8 +134,16 @@ namespace RatEye.Processing
 
 			Logger.LogDebugMat(colorFilter, "inventory/colorFilter");
 
+			var measuredScale = MeasureScale(colorFilter);
+			if (measuredScale.HasValue)
+			{
+				var configured = ProcessingConfig.Scale;
+				if (Math.Abs(measuredScale.Value - configured) / configured >= ScaleTolerance) _scale = measuredScale.Value;
+				Logger.LogDebug($"Measured scale {measuredScale.Value} (configured {configured}, using {_scale})");
+			}
+
 			// Extract vertical and horizontal lines
-			var scaledSlotSize = (int)ProcessingConfig.ScaledSlotSize;
+			var scaledSlotSize = (int)ScaledSlotSize;
 			var size = scaledSlotSize - (scaledSlotSize % 2) + 1;
 			using var lineStructure = Mat.Ones(MatType.CV_8U, new[] { size, 1 });
 			var verticalLines = colorFilter.Erode(lineStructure);
@@ -132,6 +160,63 @@ namespace RatEye.Processing
 
 			_grid = grid;
 			_vertGrid = verticalLines;
+		}
+
+		/// <summary>
+		/// Measure the scale from the spacing of the grid lines in the grid color mask
+		/// </summary>
+		/// <param name="colorFilter">Mask of pixels matching the grid color</param>
+		/// <returns>The measured scale or <see langword="null"/> if not enough grid lines were found</returns>
+		private float? MeasureScale(Mat colorFilter)
+		{
+			var expectedPitch = ProcessingConfig.Scale * GridPitch1080;
+			var pitches = new List<float>();
+			pitches.AddRange(LinePitches(colorFilter, ReduceDimension.Row, expectedPitch));
+			pitches.AddRange(LinePitches(colorFilter, ReduceDimension.Column, expectedPitch));
+			if (pitches.Count < 3) return null;
+
+			pitches.Sort();
+			var mid = pitches.Count / 2;
+			var median = pitches.Count % 2 == 1 ? pitches[mid] : (pitches[mid - 1] + pitches[mid]) / 2f;
+			return median / GridPitch1080;
+		}
+
+		/// <summary>
+		/// Distances between neighbouring grid lines along one axis, limited to plausible values
+		/// </summary>
+		/// <param name="mask">Grid color mask</param>
+		/// <param name="dimension"><see cref="ReduceDimension.Row"/> sums each column (vertical lines),
+		/// <see cref="ReduceDimension.Column"/> sums each row (horizontal lines)</param>
+		/// <param name="expectedPitch">Pitch expected from the configured scale</param>
+		private static IEnumerable<float> LinePitches(Mat mask, ReduceDimension dimension, float expectedPitch)
+		{
+			using var sums = new Mat();
+			Cv2.Reduce(mask, sums, dimension, ReduceTypes.Sum, MatType.CV_32S);
+			sums.GetArray(out int[] values);
+
+			var max = values.Length == 0 ? 0 : values.Max();
+			if (max == 0) yield break;
+			var threshold = 0.5f * max;
+
+			float? lastCentre = null;
+			var i = 0;
+			while (i < values.Length)
+			{
+				if (values[i] < threshold) { i++; continue; }
+
+				// Merge adjacent line pixels into one line
+				var start = i;
+				while (i + 1 < values.Length && values[i + 1] >= threshold) i++;
+				var centre = (start + i) / 2f;
+				i++;
+
+				if (lastCentre.HasValue)
+				{
+					var pitch = centre - lastCentre.Value;
+					if (pitch >= 0.6f * expectedPitch && pitch <= 1.6f * expectedPitch) yield return pitch;
+				}
+				lastCentre = centre;
+			}
 		}
 
 		private void ParseInventoryGrid()
@@ -180,7 +265,7 @@ namespace RatEye.Processing
 			var gridIndexer = _grid.GetGenericIndexer<byte>();
 			var vertGrindIndexer = _vertGrid.GetGenericIndexer<byte>();
 
-			var scaledSlotSize = (int)(_config.ProcessingConfig.ScaledSlotSize);
+			var scaledSlotSize = (int)ScaledSlotSize;
 
 			var maxRows = _vertGrid.Rows;
 			var maxCols = _vertGrid.Cols - scaledSlotSize / 2;
@@ -232,7 +317,7 @@ namespace RatEye.Processing
 			using var extendedLines = new Mat();
 			using var thickenedLines = new Mat();
 
-			var size = (int)(ProcessingConfig.ScaledSlotSize * 2);
+			var size = (int)(ScaledSlotSize * 2);
 			size = size - (size % 2) + 1;
 			var extendStructureSize = horizontal ? new[] { 1, size } : new[] { size, 1 };
 			using var extendStructure = Mat.Ones(MatType.CV_8U, extendStructureSize).ToMat();
@@ -256,7 +341,7 @@ namespace RatEye.Processing
 			Cv2.BitwiseXor(verticalLines, holes, vLinesWithHoles);
 			Cv2.BitwiseXor(horizontalLines, holes, hLinesWithHoles);
 
-			var scaledSlotSize = (int)(ProcessingConfig.ScaledSlotSize / 2);
+			var scaledSlotSize = (int)(ScaledSlotSize / 2);
 			var size = scaledSlotSize - (scaledSlotSize % 2) + 1;
 
 			using var vStructure = Mat.Ones(MatType.CV_8U, new[] { size, 1 }).ToMat();
@@ -371,13 +456,13 @@ namespace RatEye.Processing
 				if (_icons.Any(i => i.Position == topLeft)) return false;
 
 				// Expand the rect by a small bit to make sure the icon is included
-				var scaledSlotSize = (int)_config.ProcessingConfig.ScaledSlotSize;
+				var scaledSlotSize = (int)ScaledSlotSize;
 				var scaledSlotSizeVec = new Vector2(scaledSlotSize, scaledSlotSize);
 				topLeft -= scaledSlotSizeVec / 8;
 				size += scaledSlotSizeVec / 4;
 
 				var icon = _image.ToBitmap().Crop(topLeft.X, topLeft.Y, size.X, size.Y);
-				_icons.Add(new Icon(icon, topLeft, size, _config));
+				_icons.Add(new Icon(icon, topLeft, size, _config, _scale));
 				return true;
 			}
 
@@ -439,7 +524,7 @@ namespace RatEye.Processing
 				if (!bb.Contains(position)) continue;
 
 				// Compensate more in height as the top and bottom text often interfere
-				var scaledSlotSize = (int)_config.ProcessingConfig.ScaledSlotSize;
+				var scaledSlotSize = (int)ScaledSlotSize;
 				bb.X -= scaledSlotSize / 8;
 				bb.Y -= scaledSlotSize / 4;
 				bb.Width += scaledSlotSize / 4;
@@ -453,7 +538,7 @@ namespace RatEye.Processing
 				}
 
 				var iconImage = _image.ToBitmap().Crop(bb.X, bb.Y, bb.Width, bb.Height);
-				var icon = new Icon(iconImage, new(bb.X, bb.Y), new(bb.Width, bb.Height), _config);
+				var icon = new Icon(iconImage, new(bb.X, bb.Y), new(bb.Width, bb.Height), _config, _scale);
 				_icons = new List<Icon> { icon };
 				return icon;
 			}

@@ -22,7 +22,7 @@ namespace RatEyeTest
 			}
 		}
 
-		public RatEyeEngine GetDefaultRatEyeEngine(bool optimizeHighlighted = false)
+		public RatEyeEngine GetDefaultRatEyeEngine(bool optimizeHighlighted = false, float scale = 1f)
 		{
 			var config = new Config()
 			{
@@ -32,6 +32,7 @@ namespace RatEyeTest
 				},
 				ProcessingConfig = new Config.Processing()
 				{
+					Scale = scale,
 					IconConfig = new Config.Processing.Icon()
 					{
 						UseStaticIcons = true,

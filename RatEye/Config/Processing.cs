@@ -43,12 +43,6 @@ namespace RatEye
 			public float BaseSlotSize = 63;
 
 			/// <summary>
-			/// Slot size of a single slot in pixels, considering for scaling
-			/// <code>Scale * BaseSlotSize</code>
-			/// </summary>
-			internal float ScaledSlotSize => Scale * BaseSlotSize;
-
-			/// <summary>
 			/// Icon configuration object
 			/// </summary>
 			public Icon IconConfig = new();

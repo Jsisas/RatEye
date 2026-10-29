@@ -7,7 +7,7 @@
 		<Authors>Blightbuster</Authors>
 		<Version>4.0.1</Version>
 		<Description>Image processing library for Escape from Tarkov</Description>
-		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+		<GeneratePackageOnBuild>false</GeneratePackageOnBuild>
 		<PackageProjectUrl>https://ratscanner.com/</PackageProjectUrl>
 		<RepositoryUrl>https://github.com/RatScanner/RatEye.git</RepositoryUrl>
 		<PackageIcon>RatLogo.png</PackageIcon>

@@ -95,5 +95,26 @@ namespace RatEyeTest
 			Assert.Equal((1, 2), icon.Item.GetSlotSize());
 			Assert.Equal("Water", icon.Item.ShortName);
 		}
+
+		[Fact]
+		public void MeasuredScaleCorrectsWrongConfig()
+		{
+			var image = new Bitmap("TestData/FHD/Grid1.png");
+			var inventory = GetDefaultRatEyeEngine(scale: 0.8f).NewInventory(image);
+			var icon = inventory.LocateIcon(new Vector2(260, 130));
+			Assert.Equal((1, 1), icon.Item.GetSlotSize());
+			Assert.Equal("Propital", icon.Item.ShortName);
+		}
+
+		[Fact]
+		public void MeasuredScaleQHD()
+		{
+			var image = new Bitmap("TestData/QHD/Container.png");
+			var inventory = GetDefaultRatEyeEngine(scale: 1f).NewInventory(image);
+			var icon = inventory.LocateIcon(new Vector2(480, 170));
+			Assert.NotNull(icon);
+			Assert.NotNull(icon.Item);
+			Assert.Equal((1, 1), icon.Item.GetSlotSize());
+		}
 	}
 }

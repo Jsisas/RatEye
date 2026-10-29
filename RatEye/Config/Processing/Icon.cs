@@ -42,6 +42,26 @@ namespace RatEye
 				public bool ScanRotatedIcons = true;
 
 				/// <summary>
+				/// Read the short name of ambiguous template matches and use it to pick between look-alike icons
+				/// </summary>
+				public bool UseShortNameDisambiguation = true;
+
+				/// <summary>
+				/// Number of best template matches kept as candidates for disambiguation
+				/// </summary>
+				public int CandidateCount = 5;
+
+				/// <summary>
+				/// A match is ambiguous when the best two candidates are closer than this confidence margin
+				/// </summary>
+				public float AmbiguityMargin = 0.02f;
+
+				/// <summary>
+				/// A match is ambiguous when the best candidate has a confidence below this value
+				/// </summary>
+				public float AmbiguityMinConfidence = 0.9f;
+
+				/// <summary>
 				/// Tesseract Engine instance used and set by <see cref="RatEye.Processing.Icon"/>
 				/// </summary>
 				internal TesseractEngine TesseractEngine;
@@ -58,6 +78,10 @@ namespace RatEye
 						ScanMode.ToString(),
 						UseStaticIcons.ToString(),
 						ScanRotatedIcons.ToString(),
+						UseShortNameDisambiguation.ToString(),
+						CandidateCount.ToString(),
+						AmbiguityMargin.ToString(),
+						AmbiguityMinConfidence.ToString(),
 					};
 					return string.Join("<#sep#>", components).SHA256Hash();
 				}

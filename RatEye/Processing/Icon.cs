@@ -26,6 +26,12 @@ namespace RatEye.Processing
 		private Vector2 _itemPosition;
 		private bool _rotated;
 		private string _ocrTitle = "";
+		private readonly float _scale;
+
+		/// <summary>
+		/// Best template matches of the unrotated and rotated pass
+		/// </summary>
+		private readonly List<(string match, float confidence, Vector2 pos, bool rotated)> _candidates = new();
 
 		private Config.Processing ProcessingConfig => _config.ProcessingConfig;
 		private Config.Path PathConfig => _config.PathConfig;
@@ -57,8 +63,8 @@ namespace RatEye.Processing
 			get
 			{
 				var size = IconSlotSize();
-				size.X = (int)(size.X * ProcessingConfig.ScaledSlotSize);
-				size.Y = (int)(size.Y * ProcessingConfig.ScaledSlotSize);
+				size.X = (int)(size.X * ScaledSlotSize);
+				size.Y = (int)(size.Y * ScaledSlotSize);
 				return size;
 			}
 		}
@@ -128,13 +134,16 @@ namespace RatEye.Processing
 			}
 		}
 
-		internal Icon(Bitmap icon, Vector2 position, Vector2 size, Config config)
+		internal Icon(Bitmap icon, Vector2 position, Vector2 size, Config config, float scale)
 		{
 			_config = config;
 			_icon = icon;
 			Position = position;
 			Size = size;
+			_scale = scale;
 		}
+
+		private float ScaledSlotSize => _scale * ProcessingConfig.BaseSlotSize;
 
 		private enum State
 		{
@@ -161,6 +170,7 @@ namespace RatEye.Processing
 						{
 							TemplateMatch();
 							if (IconConfig.ScanRotatedIcons) TemplateMatch(true);
+							Disambiguate();
 						}
 						else if (IconConfig.ScanMode == Config.Processing.Icon.ScanModes.OCR) OCR();
 						break;
@@ -176,7 +186,7 @@ namespace RatEye.Processing
 		{
 			Logger.LogDebugBitmap(_icon, "icon/_icon");
 			var mul = IconConfig.ScanMode == Config.Processing.Icon.ScanModes.OCR ? 2 : 1;
-			_scaledIcon = _icon.Rescale(ProcessingConfig.InverseScale * mul);
+			_scaledIcon = _icon.Rescale(1f / _scale * mul);
 			Logger.LogDebugBitmap(_scaledIcon, "icon/_scaledIcon");
 		}
 
@@ -190,8 +200,7 @@ namespace RatEye.Processing
 
 			Logger.LogDebugMat(source, "icon/source");
 
-			(string match, float confidence, Vector2 pos) staticResult = default;
-			(string match, float confidence, Vector2 pos) dynamicResult = default;
+			List<(string match, float confidence, Vector2 pos)> staticResults = new();
 
 			if (!IconConfig.UseStaticIcons)
 			{
@@ -208,27 +217,76 @@ namespace RatEye.Processing
 				if (iconManager.StaticIcons.ContainsKey(slotSize))
 				{
 					iconManager.StaticIconsLock.EnterReadLock();
-					try { staticResult = TemplateMatchSub(source, iconManager.StaticIcons[slotSize]); }
+					try { staticResults = TemplateMatchSub(source, iconManager.StaticIcons[slotSize]); }
 					finally { iconManager.StaticIconsLock.ExitReadLock(); }
 				}
 			}
 
-			var result = staticResult.confidence > dynamicResult.confidence ? staticResult : dynamicResult;
+			foreach (var candidate in staticResults) _candidates.Add((candidate.match, candidate.confidence, candidate.pos, rotated));
+
+			if (staticResults.Count == 0) return;
+			var result = staticResults[0];
 
 			if (!(result.confidence > _detectionConfidence)) return;
 
-			_rotated = rotated;
-			_itemPosition = (rotated ? new(result.pos.Y, result.pos.X) : result.pos) * _config.ProcessingConfig.Scale;
-			_detectionConfidence = result.confidence;
-			_item = _config.IconManager.GetItem(result.match);
-			_itemExtraInfo = _config.IconManager.GetItemExtraInfo(result.match);
+			SetTemplateResult(result.match, result.confidence, result.pos, rotated);
 		}
 
-		private (string match, float confidence, Vector2 pos) TemplateMatchSub(Mat source, Dictionary<string, Mat> icons)
+		private void SetTemplateResult(string match, float confidence, Vector2 pos, bool rotated)
 		{
-			var bestMatch = "";
-			var confidence = 0f;
-			var position = Vector2.Zero;
+			_rotated = rotated;
+			_itemPosition = (rotated ? new(pos.Y, pos.X) : pos) * _scale;
+			_detectionConfidence = confidence;
+			_item = _config.IconManager.GetItem(match);
+			_itemExtraInfo = _config.IconManager.GetItemExtraInfo(match);
+		}
+
+		/// <summary>
+		/// Pick between look-alike template matches by reading the short name of the icon
+		/// </summary>
+		private void Disambiguate()
+		{
+			if (!IconConfig.UseShortNameDisambiguation || _candidates.Count < 2) return;
+
+			var ordered = _candidates.OrderByDescending(c => c.confidence).ToList();
+			var best = ordered[0].confidence;
+			var second = ordered[1].confidence;
+			if (best - second >= IconConfig.AmbiguityMargin && best >= IconConfig.AmbiguityMinConfidence) return;
+
+			string ocr;
+			try
+			{
+				ocr = ReadShortName(_icon.Rescale(2f / _scale));
+			}
+			catch (Exception e)
+			{
+				Logger.LogDebug("Short-name OCR failed: " + e.Message);
+				return;
+			}
+			if (string.IsNullOrEmpty(ocr)) return;
+
+			var bestScore = float.MinValue;
+			(string match, float confidence, Vector2 pos, bool rotated)? chosen = null;
+			foreach (var candidate in ordered)
+			{
+				var item = _config.IconManager.GetItem(candidate.match);
+				if (item == null) continue;
+				var score = candidate.confidence + 0.5f * item.ShortName.Replace("I", "T").CyrillicToLatin().NormedLevenshteinDistance(ocr);
+				if (!(score > bestScore)) continue;
+				bestScore = score;
+				chosen = candidate;
+			}
+			if (chosen == null) return;
+
+			var c = chosen.Value;
+			SetTemplateResult(c.match, c.confidence, c.pos, c.rotated);
+			Logger.LogDebug($"Disambiguated '{ocr}' -> {_item?.ShortName}");
+		}
+
+		private List<(string match, float confidence, Vector2 pos)> TemplateMatchSub(Mat source, Dictionary<string, Mat> icons)
+		{
+			var candidateCount = Math.Max(1, IconConfig.CandidateCount);
+			var results = new List<(string match, float confidence, Vector2 pos)>(candidateCount + 1);
 
 			Parallel.ForEach(icons, icon =>
 			{
@@ -237,17 +295,17 @@ namespace RatEye.Processing
 
 				lock (_sync)
 				{
-					minVal = 1 - minVal;
-					if (!(minVal > confidence)) return;
-					confidence = (float)minVal;
-					bestMatch = icon.Key;
-					position = new Vector2(minLoc);
-					//Logger.LogDebugMat(icon.Value, $"icon/conf-{confidence}.png");
-					//Logger.LogDebugMat(matches, $"icon/match-conf-{confidence}.png");
+					var confidence = (float)(1 - minVal);
+					if (results.Count == candidateCount && !(confidence > results[results.Count - 1].confidence)) return;
+
+					var index = results.FindIndex(r => confidence > r.confidence);
+					if (index < 0) index = results.Count;
+					results.Insert(index, (icon.Key, confidence, new Vector2(minLoc)));
+					if (results.Count > candidateCount) results.RemoveAt(results.Count - 1);
 				}
 			});
 
-			return (bestMatch, confidence, position);
+			return results;
 		}
 
 		/// <summary>
@@ -257,8 +315,8 @@ namespace RatEye.Processing
 		private Vector2 IconSlotSize()
 		{
 			// Use converter class to round to nearest int instead of always rounding down
-			var x = (Size.X - 1) / ProcessingConfig.ScaledSlotSize;
-			var y = (Size.Y - 1) / ProcessingConfig.ScaledSlotSize;
+			var x = (Size.X - 1) / ScaledSlotSize;
+			var y = (Size.Y - 1) / ScaledSlotSize;
 			return new Vector2((int)x, (int)y);
 		}
 		/// <summary>
@@ -268,23 +326,25 @@ namespace RatEye.Processing
 		/// <returns>Detected characters in image</returns>
 		private void OCR()
 		{
+			_itemPosition = Vector2.Zero;
+			_ocrTitle = ReadShortName(_scaledIcon);
+			SetOCRItem();
+		}
+
+		/// <summary>
+		/// Read the short name in the top strip of an icon
+		/// </summary>
+		/// <param name="scaledIcon">Icon image rescaled to twice the 1080p size</param>
+		/// <returns>The cleaned up short name</returns>
+		private string ReadShortName(Bitmap scaledIcon)
+		{
 			var topCutoff = 0;
 			var leftCutoff = 4;
 
 			// Setup tesseract
-			Logger.LogDebugMat(_scaledIcon.ToMat());
-			var topText = _scaledIcon.Crop(leftCutoff, topCutoff, _scaledIcon.Width - leftCutoff, 24);
+			Logger.LogDebugMat(scaledIcon.ToMat());
+			var topText = scaledIcon.Crop(leftCutoff, topCutoff, scaledIcon.Width - leftCutoff, 24);
 			using var topTextMat = topText.ToMat();
-
-			// Gray scale image
-			//Logger.LogDebug("Gray scaling...");
-			//var cvu83 = topTextMat.CvtColor(ColorConversionCodes.BGR2GRAY, 1);
-			//Logger.LogDebugMat(cvu83);
-
-			// Binarize image
-			//Logger.LogDebug("Binarizing...");
-			//cvu83 = cvu83.Threshold(120, 255, ThresholdTypes.BinaryInv);
-			//Logger.LogDebugMat(cvu83);
 
 			using var hsv = topTextMat.CvtColor(ColorConversionCodes.BGR2HSV_FULL);
 			using var colorFilter = hsv.InRange(new Scalar(93 * (255f / 180f), 16, 97), new Scalar(113 * (255f / 180f), 24, 217));
@@ -301,21 +361,26 @@ namespace RatEye.Processing
 
 			// OCR
 			Logger.LogDebug("Applying OCR...");
-			using var result = GetTesseractEngine().Process(pix);
-			var text = result.GetText();
-
-			var r = result.GetSegmentedRegions(PageIteratorLevel.TextLine);
-			foreach (var x in r)
+			var engine = GetTesseractEngine();
+			string text;
+			// Tesseract engines are not thread safe and the engine is shared through the config
+			lock (engine)
 			{
-				Logger.LogDebug("TEXT: " + x);
+				using var result = engine.Process(pix);
+				text = result.GetText();
+
+				var r = result.GetSegmentedRegions(PageIteratorLevel.TextLine);
+				foreach (var x in r)
+				{
+					Logger.LogDebug("TEXT: " + x);
+				}
 			}
 			Logger.LogDebugMat(topTextMat, "lalalla");
 
 			var rgx = new Regex("[^a-zA-Z0-9 -\\.]");
-			_itemPosition = Vector2.Zero;
-			_ocrTitle = rgx.Replace(text.CyrillicToLatin().Trim(), "").Trim();
-			Logger.LogDebug("Read: " + _ocrTitle);
-			SetOCRItem();
+			var title = rgx.Replace(text.CyrillicToLatin().Trim(), "").Trim();
+			Logger.LogDebug("Read: " + title);
+			return title;
 		}
 
 		/// <summary>
